@@ -1,6 +1,13 @@
+import torch
+import torch.multiprocessing as mp
+
 import gym
 import numpy as np
 from matplotlib import pyplot as plt
+
+from copy import deepcopy
+
+import os
 
 
 class TicTacToe(gym.Env):
@@ -18,6 +25,15 @@ class TicTacToe(gym.Env):
         self.emptySpaces = None
 
         self.reset()
+
+    def setState(self, state_hash):
+        for ind, char in enumerate(state_hash):
+            cell = int(char) - 1
+            self.board[ind // self.n_rows, ind % self.n_rows] = cell
+        self.boardHash = state_hash
+        self.curTurn = 1 if self.board.sum() % 2 == 0 else -1
+        self.emptySpaces = None
+        self.gameOver = False
 
     def getEmptySpaces(self):
         if self.emptySpaces is None:
@@ -172,3 +188,74 @@ def plot_test_game(env, pi1, pi2, random_crosses=False, random_naughts=True, ver
         if reward == -1:
             print("Нолики выиграли!")
             plot_board(env, None, showtext=False, fontq=fontq, fontx=fontx)
+
+
+def play_episode(env, cross_player, naught_player):
+    env.reset()
+    cross_player.reset()
+    naught_player.reset()
+    done = False
+    while not done:
+        player = cross_player if env.curTurn == 1 else naught_player
+        state_hash = env.getHash()
+        action = player.get_action(state_hash)
+        (new_state_hash, _, _), reward, done, _ = env.step(action)
+
+    return reward
+
+def play_many_episodes_worker(env, cross_player, naught_player, n_episodes, queue):
+    torch.set_num_threads(1)
+    rewards = [
+        play_episode(env, cross_player, naught_player)\
+        for _ in range(n_episodes)
+    ]
+    reward = np.array(rewards).mean()
+    queue.put(reward)
+    return reward
+
+def match_players(env, player, other_player, n_games, n_workers=12):
+    player = deepcopy(player).cpu().eval().share_memory()
+    other_player = deepcopy(other_player).cpu().eval().share_memory()
+
+    #with mp.Pool(n_workers) as pool:
+    #    cross_rewards = pool.starmap(
+    #        play_many_episodes,
+    #        [(env, player, other_player, n_games//n_workers) for _ in range(n_workers)]
+    #    )
+
+    #    naught_rewards = pool.starmap(
+    #        play_many_episodes,
+    #        [(env, other_player, player, n_games//n_workers) for _ in range(n_workers)]
+    #    )
+
+    p_cross, p_naught = [], []
+    q_cross, q_naught = mp.Queue(), mp.Queue()
+    for _ in range(n_workers):
+        p = mp.Process(
+            target=play_many_episodes_worker,
+            args=(env, player, other_player, max(n_games//n_workers, 1), q_cross)
+        )
+        p.start()
+        p_cross.append(p)
+        p = mp.Process(
+            target=play_many_episodes_worker,
+            args=(env, other_player, player, max(n_games//n_workers, 1), q_naught)
+        )
+        p.start()
+        p_naught.append(p)
+
+    for p in p_cross:
+        p.join()
+    for p in p_naught:
+        p.join()
+
+    cross_rewards, naught_rewards = [], []
+    while not q_cross.empty():
+        cross_rewards.append(q_cross.get())
+    while not q_naught.empty():
+        naught_rewards.append(q_naught.get())
+
+    cross_reward = np.array(cross_rewards).mean()
+    naught_reward = - np.array(naught_rewards).mean()
+
+    return cross_reward, naught_reward

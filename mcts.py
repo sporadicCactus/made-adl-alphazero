@@ -9,7 +9,7 @@ class Node:
         self.Q = {action: 0. for action in available_actions}
         self.N = {action: 0 for action in available_actions}
         if probs is not None:
-            self.P = {action: probs[action] for action in actions}
+            self.P = {action: probs[action] for action in available_actions}
         else:
             self.P = None
         self.value = value
@@ -40,6 +40,7 @@ class Node:
         return action
 
 class MCTSSession:
+
     def __init__(self, env, tree, exploration_parameter=1.0):
         self.env = deepcopy(env)
         self.tree = tree
@@ -97,20 +98,71 @@ class MCTSSession:
             node.update(action, self.episode_reward)
 
 
+class MCTSZeroSession(MCTSSession):
+    def __init__(self, env, tree, player, exploration_parameter=1.0):
+        super().__init__(env, tree, exploration_parameter)
+        self.player = player
+
+    def _initialize_node(self, state_hash, available_actions, turn):
+        est = self.player.estimate(state_hash)
+        node = Node(
+            state_hash, available_actions, turn,
+            probs=est["probs"], value=est["value"]
+        )
+        return node
+
+    def _rollout(self):
+        if len(self.trajectory["nodes"]) > len(self.trajectory["actions"]):
+            node = self.trajectory["nodes"].pop(-1)
+            self.episode_reward = node.value*node.turn
+
+
 class MCTS:
+
     def __init__(self, num_simulations, exploration_parameter):
         self.num_simulations = num_simulations
         self.exploration_parameter = exploration_parameter
+        self.cached_tree = None
 
-    def _create_session(self, env, tree):
+    def _create_session(self, env, tree, player=None):
         session = MCTSSession(env, tree, self.exploration_parameter)
         return session
 
-    def __call__(self, env):
+    def __call__(self, env, player=None):
         root_hash = env.getHash()
-        root = Node(*env.getState())
-        tree = {root_hash: root}
+        if self.cached_tree is None:
+            if hasattr(player, "estimate"):
+                est = player.estimate(root_hash)
+            else:
+                est = {}
+            root = Node(*env.getState(), **est)
+            tree = {root_hash: root}
+            self.cached_tree = tree
+        else:
+            tree = self.cached_tree
+            try:
+                root = tree[root_hash]
+            except:
+                if hasattr(player, "estimate"):
+                    est = player.estimate(root_hash)
+                else:
+                    est = {}
+                root = Node(*env.getState(), **est)
+                tree[root_hash] = root
         for _ in range(self.num_simulations):
-            session = self._create_session(env, tree)
+            session = self._create_session(env, tree, player)
             session.update_tree()
         return root
+
+    def reset(self):
+        self.cached_tree = None
+
+
+class MCTSZero(MCTS):
+
+    def __init__(self, num_simulations, exploration_parameter):
+        super().__init__(num_simulations, exploration_parameter)
+
+    def _create_session(self, env, tree, player):
+        session = MCTSZeroSession(env, tree, player, self.exploration_parameter)
+        return session
