@@ -78,7 +78,7 @@ class DuelingDQN(nn.Module):
         )
         self.value_head = nn.Conv2d(n_channels, 1, kernel_size=1)
         self.advantage_head = nn.Conv2d(2*n_channels, 1, kernel_size=1)
-        self.tanh = Tanh()
+        self.tanh = nn.Tanh()
 
     def forward(self, state_tensor):
         features = self.body(state_tensor)
